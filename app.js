@@ -16,19 +16,17 @@ app.use(express.json());
 app.use(cors());
 app.use(bodyParser.json());
 
-// Koneksi PostgreSQL
 const pool = new Pool({
-    connectionString: process.env.DB_URL,
-    ssl: false,  // Matikan SSL sementara
+    connectionString: process.env.DATABASE_URL, // Pastikan sesuai dengan yang digunakan di Render
+    ssl: { rejectUnauthorized: false } // Gunakan konfigurasi yang sama dengan kode kedua
 });
 
 const client = new Client({
-    connectionString: process.env.DB_URL,
-    ssl: {
-      rejectUnauthorized: false,
-    }
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
 });
 client.connect();
+
 
 // Setup Telegram Bot dengan Webhook
 const token = process.env.TELEGRAM_BOT_TOKEN;
