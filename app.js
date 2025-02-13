@@ -2,11 +2,7 @@ require('dotenv').config();
 const Joi = require('joi');
 const express = require('express');
 const cors = require('cors');
-const { Pool, Client } = require('pg');
-const TelegramBot = require('node-telegram-bot-api');
-const bodyParser = require('body-parser');
-const http = require('http');
-const { Server } = require('socket.io');
+const { Pool } = require('pg');
 
 const app = express();
 const port = 3002;
@@ -14,51 +10,30 @@ const port = 3002;
 // Middleware
 app.use(express.json());
 app.use(cors());
-app.use(bodyParser.json());
 
+// Koneksi PostgreSQL dengan Pool menggunakan connection string dari Supabase
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL, // Pastikan sesuai dengan yang digunakan di Render
-    ssl: { rejectUnauthorized: false } // Gunakan konfigurasi yang sama dengan kode kedua
+    connectionString: process.env.DATABASE_URL,  // Gunakan DATABASE_URL yang ada di .env
+    ssl: {
+        rejectUnauthorized: false  // Menggunakan SSL jika dibutuhkan
+    }
 });
 
-const client = new Client({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
-});
-client.connect();
-
-
-// Setup Telegram Bot dengan Webhook
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const bot = new TelegramBot(token);
-const webhookUrl = `${process.env.WEBHOOK_URL}/telegram-webhook`;
-bot.setWebHook(webhookUrl);
-const chatIds = ['6994035359'];
-
-// WebSocket setup
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "http://127.0.0.1:5500",
-    methods: ["GET", "POST"]
-  }
-});
-
-// Validasi schema dengan Joi
+// Validasi schema dengan Joi (lebih fleksibel)
 const schema = Joi.object({
-    id: Joi.string().trim().min(1).required(),
+    id: Joi.string().trim().min(1).required(),  // Tambahkan id agar bisa divalidasi
     nama: Joi.string().trim().min(1).required(),
     jenis: Joi.string().trim().min(1).required(),
     usia: Joi.number().integer().min(0).required(),
     status_kesehatan: Joi.string().trim().min(3).required(),
 });
 
-// Endpoint untuk ambil daftar hewan dengan pagination, search, dan sorting
+// Endpoint: Ambil daftar hewan dengan pagination dan search
 app.get('/hewan', async (req, res) => {
     let { page = 1, limit = 10, search = '', sortBy = 'id', order = 'ASC' } = req.query;
     page = parseInt(page);
     limit = parseInt(limit);
-
+    
     const validColumns = ['nama', 'jenis', 'usia', 'status_kesehatan', 'id'];
     order = order.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
@@ -68,13 +43,16 @@ app.get('/hewan', async (req, res) => {
 
     try {
         const offset = (page - 1) * limit;
+
         const query = `
             SELECT * FROM hewan
             WHERE nama ILIKE $1 OR jenis ILIKE $1
             ORDER BY ${sortBy} ${order}
             LIMIT $2 OFFSET $3
         `;
+
         const result = await pool.query(query, [`%${search}%`, limit, offset]);
+
         const countQuery = `SELECT COUNT(*) FROM hewan WHERE nama ILIKE $1 OR jenis ILIKE $1`;
         const totalCount = await pool.query(countQuery, [`%${search}%`]);
 
@@ -91,56 +69,77 @@ app.get('/hewan', async (req, res) => {
     }
 });
 
-// Endpoint webhook Telegram
-app.post('/telegram-webhook', (req, res) => {
-    const update = req.body;
-    console.log('Update dari Telegram:', update);
+// Endpoint: Tambah data hewan
+app.post('/hewan', async (req, res) => {
+    console.log("Data yang diterima di backend:", req.body); // Debugging
 
-    if (update.message) {
-        const chatId = update.message.chat.id;
-        const text = update.message.text;
-        bot.sendMessage(chatId, `Anda mengirim: ${text}`);
+    const { error } = schema.validate(req.body);
+    if (error) {
+        console.log("Validasi gagal:", error.details[0].message);
+        return res.status(400).json({ message: error.details[0].message });
     }
 
-    res.sendStatus(200);
+    const { id, nama, jenis, usia, status_kesehatan } = req.body;
+    try {
+        const result = await pool.query(
+            'INSERT INTO hewan (id, nama, jenis, usia, status_kesehatan) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [id, nama, jenis, usia, status_kesehatan]
+        );
+        console.log("Data berhasil dimasukkan ke PostgreSQL:", result.rows[0]);
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        console.error("Kesalahan di server:", err);
+        res.status(500).json({ message: 'Terjadi kesalahan di server' });
+    }
 });
 
-// Endpoint untuk menerima data UID dari ESP8266
-app.post('/api/animal', async (req, res) => {
-    const rfidUid = req.body.uid;
-    console.log('UID diterima:', rfidUid);
+// Endpoint: Update data hewan
+app.put('/hewan/:id', async (req, res) => {
+    const { id } = req.params;
+    const { error } = schema.validate(req.body);
+    if (error) {
+        return res.status(400).json({ message: error.details[0].message });
+    }
+
+    const { nama, jenis, usia, status_kesehatan } = req.body;
+    if (!id || isNaN(id)) {
+        return res.status(400).json({ message: 'ID tidak valid' });
+    }
 
     try {
-        const query = 'SELECT * FROM hewan WHERE id = $1';
-        const result = await client.query(query, [rfidUid]);
+        const result = await pool.query(
+            'UPDATE hewan SET nama = $1, jenis = $2, usia = $3, status_kesehatan = $4 WHERE id = $5 RETURNING *',
+            [nama, jenis, usia, status_kesehatan, id]
+        );
 
         if (result.rows.length > 0) {
-            const hewan = result.rows[0];
-            const message = `Data Hewan:\nNama: ${hewan.nama}\nJenis: ${hewan.jenis}\nUsia: ${hewan.usia} tahun\nStatus Kesehatan: ${hewan.status_kesehatan}`;
-
-            // Kirimkan pesan ke chat ID Telegram
-            chatIds.forEach(id => bot.sendMessage(id, message));
-
-            // Kirim data ke WebSocket
-            io.emit('rfid-scanned', {
-                rfid_code: rfidUid,
-                nama: hewan.nama,
-                info_tambahan: hewan.jenis,
-                waktu_scan: new Date().toLocaleString()
-            });
-
-            res.status(200).send('Data diterima');
+            res.status(200).json(result.rows[0]);
         } else {
-            chatIds.forEach(id => bot.sendMessage(id, `Tidak ditemukan data untuk UID: ${rfidUid}`));
-            res.status(404).send('Data tidak ditemukan');
+            res.status(404).json({ message: 'Hewan tidak ditemukan dengan ID tersebut' });
         }
-    } catch (error) {
-        console.error('Error querying database:', error);
-        res.status(500).send('Terjadi kesalahan saat mengambil data');
+    } catch (err) {
+        console.error(err.stack);
+        res.status(500).json({ message: 'Terjadi kesalahan di server' });
+    }
+});
+
+// Endpoint: Hapus data hewan
+app.delete('/hewan/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const result = await pool.query('DELETE FROM hewan WHERE id = $1 RETURNING *', [id]);
+        if (result.rows.length > 0) {
+            res.json({ message: 'Hewan berhasil dihapus' });
+        } else {
+            res.status(404).json({ message: 'Hewan tidak ditemukan' });
+        }
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Terjadi kesalahan di server' });
     }
 });
 
 // Jalankan server
-server.listen(port, () => {
+app.listen(port, () => {
     console.log(`Server berjalan di http://localhost:${port}`);
 });
