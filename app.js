@@ -23,6 +23,7 @@ const pool = new Pool({
       rejectUnauthorized: false, // Mengizinkan koneksi SSL, jika dibutuhkan
     }
 });
+module.exports = pool;
 
 const client = new Client({
     connectionString: process.env.DB_URL,
