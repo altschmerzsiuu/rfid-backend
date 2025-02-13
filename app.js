@@ -19,9 +19,7 @@ app.use(bodyParser.json());
 // Koneksi PostgreSQL
 const pool = new Pool({
     connectionString: process.env.DB_URL,
-    ssl: {
-      rejectUnauthorized: false,
-    }
+    ssl: false,  // Matikan SSL sementara
 });
 
 const client = new Client({
